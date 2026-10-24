@@ -1,18 +1,35 @@
 import { useEffect, useState } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate, Link } from 'react-router-dom';
 import { useApp } from '../store';
-import { SmartImg, Spinner, ErrorState, timeAgo } from '../components/ui';
+import { SmartImg, Spinner, ErrorState, timeAgo, Badge } from '../components/ui';
+import {
+  BookOpen,
+  ArrowUpDown,
+  Bookmark,
+  Share2,
+  CheckCircle2,
+  Calendar,
+  User,
+  Search,
+  Sparkles,
+  ChevronRight
+} from 'lucide-react';
 
 export function MangaDetail() {
   const { sourceKey, id } = useParams();
-  const { source, continueFor, recordRead } = useApp();
+  const { sourceList, continueFor, recordRead, isBookmarked, toggleBookmark, history } = useApp();
   const navigate = useNavigate();
+
+  // Use the source explicitly from URL parameter
+  const activeSource = sourceList[sourceKey] || sourceList.shinigami;
 
   const [manga, setManga] = useState(null);
   const [chapters, setChapters] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
-  const [sortAsc, setSortAsc] = useState(false); // newest first by default
+  const [sortAsc, setSortAsc] = useState(false); // default: newest first (standard for scanlation)
+  const [chapterFilter, setChapterFilter] = useState('');
+  const [copied, setCopied] = useState(false);
 
   useEffect(() => {
     let alive = true;
@@ -21,194 +38,363 @@ export function MangaDetail() {
     setManga(null);
     setChapters([]);
 
-    Promise.all([source.detail(id), source.chapters(id)])
+    Promise.all([activeSource.detail(id), activeSource.chapters(id)])
       .then(([m, ch]) => {
         if (!alive) return;
         setManga(m);
-        setChapters(ch);
+        setChapters(ch || []);
         setLoading(false);
       })
       .catch((err) => {
         if (!alive) return;
-        setError(err.message || 'Gagal memuat komik.');
+        setError(err.message || 'Gagal memuat detail komik.');
         setLoading(false);
       });
 
     return () => {
       alive = false;
     };
-  }, [source, id]);
+  }, [activeSource, id]);
 
-  const resume = manga ? continueFor(sourceKey, manga.id) : null;
+  const resume = manga ? continueFor(manga.source, manga.id) : null;
+  const bookmarked = manga ? isBookmarked(manga.source, manga.id) : false;
 
-  // Resolve "first chapter" = lowest number; "last" = highest number.
+  // Chapters are sorted ascending in API (ch 1 -> ch N)
   const firstCh = chapters.length ? chapters[0] : null;
   const lastCh = chapters.length ? chapters[chapters.length - 1] : null;
 
-  const resumeCh =
-    resume &&
-    resume.chapterIndex !== undefined &&
-    chapters[resume.chapterIndex]
-      ? chapters[resume.chapterIndex]
-      : resume?.num !== undefined
-        ? chapters.find((c) => c.num === resume.num)
-        : lastCh;
+  // Resolve which chapter to resume
+  let resumeCh = null;
+  if (resume) {
+    resumeCh = chapters.find((c) => c.id === resume.chapterId);
+    if (!resumeCh && resume.chapterNum !== null) {
+      resumeCh = chapters.find((c) => c.num === resume.chapterNum);
+    }
+  }
 
   const openChapter = (ch, index) => {
+    if (!ch) return;
     recordRead({ manga, chapter: ch, chapterIndex: index });
     navigate(
-      `/${sourceKey}/manga/${encodeURIComponent(id)}/baca/${encodeURIComponent(ch.id)}`
+      `/${manga.source}/manga/${encodeURIComponent(id)}/baca/${encodeURIComponent(ch.id)}`
     );
   };
 
-  const shown = sortAsc ? [...chapters].reverse() : chapters;
+  const handleShare = () => {
+    if (navigator.clipboard) {
+      navigator.clipboard.writeText(window.location.href);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }
+  };
 
-  if (loading)
+  // Filter chapters by search
+  const filteredChapters = chapters.filter((c) => {
+    if (!chapterFilter.trim()) return true;
+    const q = chapterFilter.toLowerCase().trim();
+    return c.name.toLowerCase().includes(q) || (c.num !== null && String(c.num).includes(q));
+  });
+
+  // Sort order
+  const displayedChapters = sortAsc
+    ? [...filteredChapters]
+    : [...filteredChapters].reverse();
+
+  if (loading) {
     return (
-      <div className="mx-auto max-w-[1400px] px-4">
-        <Spinner label="Memuat komik" />
+      <div className="mx-auto max-w-[1400px] px-4 sm:px-6 py-12">
+        <Spinner label="Memuat informasi komik & daftar bab" />
       </div>
     );
+  }
 
-  if (error)
+  if (error || !manga) {
     return (
-      <div className="mx-auto max-w-[1400px] px-4">
-        <ErrorState message={error} onRetry={() => navigate(0)} />
+      <div className="mx-auto max-w-[1400px] px-4 sm:px-6 py-12">
+        <ErrorState
+          message={error || 'Komik tidak ditemukan.'}
+          onRetry={() => {
+            setLoading(true);
+            setError('');
+            Promise.all([activeSource.detail(id), activeSource.chapters(id)])
+              .then(([m, ch]) => {
+                setManga(m);
+                setChapters(ch || []);
+                setLoading(false);
+              })
+              .catch((err) => {
+                setError(err.message || 'Gagal memuat');
+                setLoading(false);
+              });
+          }}
+        />
       </div>
     );
+  }
 
   return (
-    <div className="mx-auto max-w-[1400px] px-4">
-      {/* Info panel */}
-      <section className="grid grid-cols-1 gap-6 border border-[var(--border)] bg-[var(--surface)] p-5 md:grid-cols-[220px_1fr]">
-        <div className="w-40 md:w-full">
-          <SmartImg
-            src={manga.thumbnail}
-            alt={manga.title}
-            className="aspect-[3/4] w-full border border-[var(--border)] object-cover object-top"
-          />
-        </div>
+    <div className="mx-auto max-w-[1400px] px-4 sm:px-6 py-6">
+      {/* Breadcrumb */}
+      <nav className="mb-4 flex items-center gap-1.5 text-[11px] font-mono uppercase text-neutral-500">
+        <Link to="/" className="hover:text-neutral-300">
+          Beranda
+        </Link>
+        <ChevronRight className="w-3 h-3 text-neutral-600" />
+        <Link to={`/${manga.source}/pustaka`} className="hover:text-neutral-300">
+          {manga.source}
+        </Link>
+        <ChevronRight className="w-3 h-3 text-neutral-600" />
+        <span className="text-neutral-300 truncate max-w-xs">{manga.title}</span>
+      </nav>
 
-        <div className="min-w-0">
-          <h1 className="text-2xl font-black leading-tight md:text-3xl">
-            {manga.title}
-          </h1>
-          {manga.altTitle && (
-            <p className="mt-1 text-sm italic text-neutral-500">{manga.altTitle}</p>
-          )}
-
-          {/* Metadata */}
-          <dl className="mt-4 grid grid-cols-2 gap-x-6 gap-y-1.5 text-sm sm:grid-cols-3">
-            <Meta label="Status" value={manga.status} />
-            <Meta label="Tipe" value={manga.type} />
-            {manga.author && <Meta label="Penulis" value={manga.author} />}
-            {manga.artist && <Meta label="Seniman" value={manga.artist} />}
-          </dl>
-
-          {manga.genre?.length > 0 && (
-            <div className="mt-3 flex flex-wrap gap-1.5">
-              {manga.genre.map((g) => (
-                <span
-                  key={g}
-                  className="border border-[var(--border)] px-2 py-0.5 text-xs text-neutral-400"
-                >
-                  {g}
-                </span>
-              ))}
+      {/* Main Manga Info Panel */}
+      <section className="border border-[#23232c] bg-[#121216] p-5 sm:p-8 mb-10">
+        <div className="grid grid-cols-1 md:grid-cols-[240px_1fr] gap-6 lg:gap-8">
+          {/* Cover Poster */}
+          <div className="w-48 sm:w-56 md:w-full mx-auto md:mx-0 shrink-0">
+            <div className="relative aspect-[3/4] w-full border border-[#23232c] bg-[#16161c] overflow-hidden">
+              <SmartImg
+                src={manga.thumbnail}
+                alt={manga.title}
+                className="w-full h-full object-cover object-top"
+              />
+              <span className="absolute left-2 top-2 border border-black/40 bg-black/85 px-2 py-0.5 text-[10px] font-mono font-bold uppercase tracking-wider text-[#e11d48]">
+                {manga.type}
+              </span>
             </div>
-          )}
 
-          {manga.description && (
-            <p className="mt-4 max-w-3xl text-sm leading-relaxed text-neutral-400">
-              {manga.description}
-            </p>
-          )}
+            {/* Quick Actions below poster */}
+            <div className="mt-3 grid grid-cols-2 gap-2">
+              <button
+                onClick={() => toggleBookmark(manga)}
+                className={`flex items-center justify-center gap-1.5 py-2 px-3 border text-xs font-bold uppercase tracking-wider transition-colors ${
+                  bookmarked
+                    ? 'border-[#e11d48] bg-[#e11d48] text-white'
+                    : 'border-[#23232c] bg-[#181820] text-neutral-300 hover:border-neutral-500'
+                }`}
+              >
+                <Bookmark className="w-3.5 h-3.5" />
+                <span>{bookmarked ? 'Tersimpan' : 'Simpan'}</span>
+              </button>
 
-          {/* Primary actions */}
-          <div className="mt-5 flex flex-wrap gap-3">
-            <button
-              onClick={() => openChapter(resumeCh || firstCh, chapters.indexOf(resumeCh || firstCh))}
-              disabled={!chapters.length}
-              className="border border-[var(--accent)] bg-[var(--accent)] px-6 py-2.5 text-sm font-bold text-[var(--bg)] transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
-            >
-              {resume
-                ? `Lanjutkan — ${resume.chapterTitle}`
-                : 'Mulai Membaca'}
-            </button>
-            <button
-              onClick={() => openChapter(firstCh, 0)}
-              disabled={!chapters.length}
-              className="border border-[var(--border)] px-6 py-2.5 text-sm font-semibold text-neutral-300 transition-colors hover:border-neutral-500 disabled:cursor-not-allowed disabled:opacity-40"
-            >
-              Dari Awal
-            </button>
+              <button
+                onClick={handleShare}
+                className="flex items-center justify-center gap-1.5 py-2 px-3 border border-[#23232c] bg-[#181820] text-xs font-bold uppercase tracking-wider text-neutral-300 hover:border-neutral-500 transition-colors"
+              >
+                <Share2 className="w-3.5 h-3.5" />
+                <span>{copied ? 'Disalin!' : 'Bagikan'}</span>
+              </button>
+            </div>
+          </div>
+
+          {/* Details & Metadata */}
+          <div className="min-w-0 flex flex-col justify-between">
+            <div>
+              {/* Type & Status Row */}
+              <div className="flex flex-wrap items-center gap-2 mb-2">
+                <Badge variant="accentOutline">{manga.type}</Badge>
+                <Badge variant={manga.status === 'Completed' ? 'dark' : 'amber'}>
+                  {manga.status}
+                </Badge>
+                <span className="text-[10px] font-mono uppercase text-neutral-500">
+                  Sumber: {manga.source}
+                </span>
+              </div>
+
+              {/* Title */}
+              <h1 className="text-2xl sm:text-3xl lg:text-4xl font-black text-white leading-tight uppercase font-sans tracking-tight">
+                {manga.title}
+              </h1>
+
+              {/* Alt Title */}
+              {manga.altTitle && (
+                <p className="mt-1 text-xs sm:text-sm font-mono text-neutral-400 italic">
+                  {manga.altTitle}
+                </p>
+              )}
+
+              {/* Meta Grid */}
+              <div className="mt-4 grid grid-cols-2 sm:grid-cols-3 gap-3 border-y border-[#1e1e26] py-3 text-xs">
+                <div>
+                  <span className="block text-[10px] font-mono uppercase text-neutral-500">Penulis</span>
+                  <span className="font-semibold text-neutral-200 truncate block">
+                    {manga.author || 'Tidak diketahui'}
+                  </span>
+                </div>
+                <div>
+                  <span className="block text-[10px] font-mono uppercase text-neutral-500">Seniman</span>
+                  <span className="font-semibold text-neutral-200 truncate block">
+                    {manga.artist || manga.author || '-'}
+                  </span>
+                </div>
+                <div>
+                  <span className="block text-[10px] font-mono uppercase text-neutral-500">Jumlah Bab</span>
+                  <span className="font-mono font-bold text-[#e11d48]">
+                    {chapters.length} Bab
+                  </span>
+                </div>
+              </div>
+
+              {/* Genres list */}
+              {manga.genre && manga.genre.length > 0 && (
+                <div className="mt-4 flex flex-wrap gap-1.5">
+                  {manga.genre.map((g) => (
+                    <Link
+                      key={g}
+                      to={`/${manga.source}/genre/${encodeURIComponent(g.toLowerCase())}`}
+                      className="border border-[#282834] bg-[#16161c] px-2.5 py-1 text-[11px] font-mono uppercase tracking-wider text-neutral-400 hover:border-[#e11d48] hover:text-[#e11d48] transition-colors"
+                    >
+                      {g}
+                    </Link>
+                  ))}
+                </div>
+              )}
+
+              {/* Synopsis */}
+              <div className="mt-5">
+                <h3 className="text-xs font-bold uppercase tracking-wider text-neutral-400 mb-1.5 font-mono">
+                  Sinopsis
+                </h3>
+                <p className="text-xs sm:text-sm text-neutral-300 leading-relaxed max-w-4xl whitespace-pre-line">
+                  {manga.description}
+                </p>
+              </div>
+            </div>
+
+            {/* Major CTAs */}
+            <div className="mt-8 flex flex-wrap items-center gap-3 pt-6 border-t border-[#1e1e26]">
+              {resumeCh ? (
+                <button
+                  onClick={() => openChapter(resumeCh, chapters.indexOf(resumeCh))}
+                  className="flex items-center gap-2 border border-[#e11d48] bg-[#e11d48] px-6 py-3 text-xs sm:text-sm font-bold uppercase tracking-widest text-white transition-opacity hover:opacity-90 active:scale-95 shadow-sm"
+                >
+                  <BookOpen className="w-4 h-4" />
+                  <span>Lanjutkan — {resumeCh.name}</span>
+                </button>
+              ) : (
+                <button
+                  onClick={() => openChapter(firstCh, 0)}
+                  disabled={!chapters.length}
+                  className="flex items-center gap-2 border border-[#e11d48] bg-[#e11d48] px-6 py-3 text-xs sm:text-sm font-bold uppercase tracking-widest text-white transition-opacity hover:opacity-90 active:scale-95 disabled:opacity-40"
+                >
+                  <BookOpen className="w-4 h-4" />
+                  <span>Mulai Membaca Bab 1</span>
+                </button>
+              )}
+
+              {lastCh && (
+                <button
+                  onClick={() => openChapter(lastCh, chapters.length - 1)}
+                  disabled={!chapters.length}
+                  className="border border-[#282834] bg-[#16161c] px-5 py-3 text-xs sm:text-sm font-semibold uppercase tracking-wider text-neutral-300 hover:text-white hover:border-neutral-500 transition-colors disabled:opacity-40"
+                >
+                  Bab Terakhir ({lastCh.num ? `Ch. ${lastCh.num}` : 'Terbaru'})
+                </button>
+              )}
+
+              {resumeCh && firstCh && (
+                <button
+                  onClick={() => openChapter(firstCh, 0)}
+                  className="border border-[#23232c] px-4 py-3 text-xs font-semibold uppercase tracking-wider text-neutral-400 hover:text-white transition-colors"
+                >
+                  Ulang Dari Awal
+                </button>
+              )}
+            </div>
           </div>
         </div>
       </section>
 
-      {/* Chapter list */}
-      <section className="mt-8">
-        <div className="mb-4 flex items-center justify-between border-b border-[var(--border)] pb-3">
-          <h2 className="text-lg font-bold uppercase tracking-wide">
-            Daftar Chapter{' '}
-            <span className="text-sm font-normal text-neutral-500">
-              ({chapters.length})
+      {/* Chapters Section */}
+      <section className="border border-[#23232c] bg-[#121216] p-5 sm:p-6">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-[#23232c] pb-4 mb-4">
+          <div className="flex items-center gap-2.5">
+            <div className="w-1.5 h-4 bg-[#e11d48]" />
+            <h2 className="text-base font-extrabold uppercase tracking-wide text-white">
+              Daftar Bab
+            </h2>
+            <span className="font-mono text-xs text-neutral-500">
+              ({displayedChapters.length} dari {chapters.length})
             </span>
-          </h2>
-          <button
-            onClick={() => setSortAsc((v) => !v)}
-            className="border border-[var(--border)] px-3 py-1.5 text-xs font-semibold uppercase tracking-wider text-neutral-400 transition-colors hover:border-[var(--accent)] hover:text-[var(--accent)]"
-          >
-            {sortAsc ? 'Terlama → Terbaru' : 'Terbaru → Terlama'}
-          </button>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-3">
+            {/* Quick chapter search input */}
+            <div className="relative">
+              <input
+                type="text"
+                placeholder="Cari nomor bab…"
+                value={chapterFilter}
+                onChange={(e) => setChapterFilter(e.target.value)}
+                className="h-8 w-36 sm:w-44 border border-[#23232c] bg-[#16161c] pl-8 pr-2 text-xs text-neutral-200 placeholder:text-neutral-500 focus:border-[#e11d48] focus:outline-none"
+              />
+              <Search className="w-3.5 h-3.5 text-neutral-500 absolute left-2.5 top-2.5 pointer-events-none" />
+            </div>
+
+            {/* Sort Direction Toggle */}
+            <button
+              onClick={() => setSortAsc((v) => !v)}
+              className="flex items-center gap-1.5 border border-[#23232c] bg-[#16161c] px-3 py-1.5 text-xs font-mono font-semibold uppercase tracking-wider text-neutral-300 hover:border-[#e11d48] hover:text-white transition-colors"
+            >
+              <ArrowUpDown className="w-3.5 h-3.5" />
+              <span>{sortAsc ? 'Terlama → Terbaru' : 'Terbaru → Terlama'}</span>
+            </button>
+          </div>
         </div>
 
-        <ol className="divide-y divide-[var(--border)]">
-          {shown.map((ch) => {
-            const index = chapters.indexOf(ch);
-            const isResume = resumeCh?.id === ch.id;
-            return (
-              <li key={ch.id}>
-                <button
-                  onClick={() => openChapter(ch, index)}
-                  className="flex w-full items-center justify-between gap-4 py-3 text-left transition-colors hover:bg-[var(--surface)]"
-                >
-                  <span className="flex min-w-0 items-center gap-3">
-                    <span
-                      className={`shrink-0 text-sm font-bold ${
-                        isResume
-                          ? 'text-[var(--accent)]'
-                          : 'text-neutral-500'
-                      }`}
-                    >
-                      {isResume ? '● ' : ''}
-                      {ch.num ?? '–'}
-                    </span>
-                    <span className="truncate text-sm text-neutral-200">
-                      {ch.name}
-                    </span>
-                  </span>
-                  {ch.releaseAt && (
-                    <span className="shrink-0 text-xs text-neutral-500">
-                      {timeAgo(ch.releaseAt)}
-                    </span>
-                  )}
-                </button>
-              </li>
-            );
-          })}
-        </ol>
-      </section>
-    </div>
-  );
-}
+        {/* Chapter List */}
+        {displayedChapters.length === 0 ? (
+          <div className="py-12 text-center text-xs font-mono text-neutral-500">
+            {chapters.length === 0 ? 'Belum ada bab yang dirilis.' : 'Tidak ada bab yang cocok dengan pencarian.'}
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2 max-h-[680px] overflow-y-auto pr-1">
+            {displayedChapters.map((ch) => {
+              const originalIndex = chapters.indexOf(ch);
+              const isCurrentResume = resumeCh?.id === ch.id;
 
-function Meta({ label, value }) {
-  if (!value) return null;
-  return (
-    <div>
-      <dt className="text-xs uppercase tracking-wider text-neutral-600">{label}</dt>
-      <dd className="text-neutral-300">{value}</dd>
+              return (
+                <button
+                  key={ch.id}
+                  onClick={() => openChapter(ch, originalIndex)}
+                  className={`flex items-center justify-between p-3 border text-left transition-all group ${
+                    isCurrentResume
+                      ? 'border-[#e11d48] bg-[#e11d48]/10'
+                      : 'border-[#202028] bg-[#141419] hover:border-[#383846] hover:bg-[#181820]'
+                  }`}
+                >
+                  <div className="min-w-0 flex items-center gap-2.5">
+                    {isCurrentResume && (
+                      <span className="w-2 h-2 rounded-full bg-[#e11d48] shrink-0" />
+                    )}
+                    <div>
+                      <span
+                        className={`text-xs font-bold block truncate ${
+                          isCurrentResume
+                            ? 'text-[#e11d48]'
+                            : 'text-neutral-200 group-hover:text-white'
+                        }`}
+                      >
+                        {ch.name}
+                      </span>
+                      {ch.releaseAt && (
+                        <span className="text-[10px] font-mono text-neutral-500 flex items-center gap-1 mt-0.5">
+                          <Calendar className="w-2.5 h-2.5" />
+                          <span>{timeAgo(ch.releaseAt)}</span>
+                        </span>
+                      )}
+                    </div>
+                  </div>
+
+                  <span className="text-xs font-mono font-bold text-neutral-500 group-hover:text-[#e11d48] shrink-0 ml-2">
+                    Baca →
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        )}
+      </section>
     </div>
   );
 }
